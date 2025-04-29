@@ -1,0 +1,7 @@
+{
+	"editor.formatOnSave": true,
+	"editor.defaultFormatter": "esbenp.prettier-vscode",
+	"prettier.prettierPath": "./node_modules/prettier",
+	"typescript.format.enable": false,
+	"typescript.validate.enable": true
+}

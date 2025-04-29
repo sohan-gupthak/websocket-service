@@ -1,0 +1,110 @@
+# Azure Pipeline for WebSocket-SSE Combined Service
+# This pipeline builds and deploys the combined WebSocket and SSE service
+
+trigger:
+  branches:
+    include:
+      - dev
+      - main  # Added main branch for production deployments
+
+variables:
+  - group: qwipo-global
+  - name: nodeVersion
+    value: '22.14.0'
+  - name: buildOutputFolder
+    value: 'dist'
+
+stages:
+  - stage: Build
+    displayName: 'Build Combined Service'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build WebSocket-SSE Service'
+        pool:
+          name: Azure Pipelines
+          vmImage: 'ubuntu-22.04'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+            
+          - task: NodeTool@0
+            displayName: 'Use Node $(nodeVersion)'
+            inputs:
+              versionSpec: $(nodeVersion)
+              
+          - task: CmdLine@2
+            displayName: 'Install Dependencies'
+            inputs:
+              script: npm ci
+              
+          - task: replacetokens@6
+            displayName: 'Replace Environment Tokens'
+            inputs:
+              root: '$(System.DefaultWorkingDirectory)'
+              sources: 'config/*.json'
+              telemetryOptout: true
+              
+          - task: CmdLine@2
+            displayName: 'Build TypeScript'
+            inputs:
+              script: npm run build
+              
+          - task: CmdLine@2
+            displayName: 'Copy Config Files and Dependencies'
+            inputs:
+              script: |
+                mkdir -p $(buildOutputFolder)/config
+                cp -r config/* $(buildOutputFolder)/config
+                cp package.json $(buildOutputFolder)/
+                cp package-lock.json $(buildOutputFolder)/
+                
+          - task: CmdLine@2
+            displayName: 'Install Production Dependencies in Output Folder'
+            inputs:
+              script: |
+                cd $(buildOutputFolder)
+                npm ci --only=production
+                
+          - task: ArchiveFiles@2
+            displayName: 'Archive Build Files'
+            inputs:
+              rootFolderOrFile: '$(buildOutputFolder)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/websocket-sse-service.zip'
+              replaceExistingArchive: true
+              
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Build Artifacts'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+              publishLocation: 'Container'
+
+  - stage: Deploy
+    displayName: 'Deploy Service'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployService
+        displayName: 'Deploy to Production'
+        environment: 'Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadBuildArtifacts@1
+                  inputs:
+                    buildType: 'current'
+                    downloadType: 'single'
+                    artifactName: 'drop'
+                    downloadPath: '$(System.ArtifactsDirectory)'
+                    
+                - task: AzureWebApp@1
+                  displayName: 'Deploy to Azure Web App'
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'webAppLinux'
+                    appName: '$(webAppName)'
+                    package: '$(System.ArtifactsDirectory)/drop/websocket-sse-service.zip'
+                    startUpCommand: 'npm run start:combined'
